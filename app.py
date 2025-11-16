@@ -10,6 +10,10 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
+@app.route('/')
+def hello_world():
+    return 'Hello, World!'
+
 @app.route('/remove-background', methods=['POST', 'OPTIONS'])
 def remove_background():
     if request.method == 'OPTIONS':
