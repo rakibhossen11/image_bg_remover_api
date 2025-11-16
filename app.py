@@ -1,9 +1,38 @@
-from flask import Flask
+from flask import Flask, jsonify
+
 app = Flask(__name__)
 
 @app.route('/')
 def hello_world():
-    return 'Hello, World!'
+    return jsonify({
+        "message": "Hello World!",
+        "status": "success",
+        "service": "Render Test Server"
+    })
+
+@app.route('/health')
+def health_check():
+    return jsonify({
+        "message": "Healthy Routes",
+        "status": "healthy",
+        "timestamp": "2025-11-16T03:11:10Z"
+    })
+
+@app.route('/info')
+def server_info():
+    return jsonify({
+        "message": "Server Info",
+        "server": "Flask",
+        "environment": "production",
+        "endpoints": [
+            "GET /",
+            "GET /health", 
+            "GET /info"
+        ]
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=False)
 
 # from flask import Flask, request, jsonify
 # from flask_cors import CORS
