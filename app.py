@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from rembg import remove
-import base64
+# from rembg import remove
+# import base64
 import logging
 
 logging.basicConfig(level=logging.INFO)
