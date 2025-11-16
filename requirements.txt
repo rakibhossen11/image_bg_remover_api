@@ -1,8 +1,8 @@
-Flask==3.0.0
+Flask==3.10.0
 gunicorn==21.2.0
 Pillow>=10.0.0
 flask-cors==4.0.0
-# rembg==2.0.67
+rembg==2.0.67
 
 # Flask==3.0.0
 # gunicorn==21.2.0
