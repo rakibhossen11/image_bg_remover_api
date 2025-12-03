@@ -60,6 +60,7 @@ def remove_background():
         result_b64 = base64.b64encode(output_data).decode('utf-8')
 
         return jsonify({
+            "message": "Background Remover API Running!",
             "success": True,
             "processed_image": result_b64,
             "format": "png",
