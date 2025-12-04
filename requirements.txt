@@ -3,7 +3,7 @@ flask-cors
 rembg
 pillow
 numpy
-onnxruntime==1.15.1
+onnxruntime
 onnxruntime-tools
 gunicorn
 
