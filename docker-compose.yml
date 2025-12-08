@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  bg-remover-api:
+    build: .
+    container_name: background-remover
+    ports:
+      - "5000:5000"
+    environment:
+      - PORT=5000
+      - MAX_UPLOAD_MB=8
+      - FLASK_ENV=production
+    restart: unless-stopped
+    volumes:
+      - ./models:/home/appuser/.u2net  # Cache models outside container
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M

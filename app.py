@@ -13,38 +13,50 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# ✅ Load lightweight model ONCE (VERY IMPORTANT)
+# ✅ Environment variables with defaults
+MAX_IMAGE_SIZE = (768, 768)
+MAX_UPLOAD_MB = int(os.getenv('MAX_UPLOAD_MB', '8'))
+MODEL_PATH = os.getenv('MODEL_PATH', '/home/appuser/.u2net')
+
+# ✅ Create models directory if it doesn't exist
+os.makedirs(MODEL_PATH, exist_ok=True)
+
+# ✅ Load model ONCE when app starts
+logger.info("Loading rembg model...")
 session = new_session(
     "u2netp",
     providers=["CPUExecutionProvider"]
 )
-
-MAX_IMAGE_SIZE = (768, 768)   # resize limit
-MAX_UPLOAD_MB = 8             # safety limit
+logger.info("Model loaded successfully!")
 
 
 def preprocess_image(image_bytes):
-    """
-    Resize + compress image to reduce RAM usage
-    """
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-
-    # ✅ Resize image (maintain aspect ratio)
-    img.thumbnail(MAX_IMAGE_SIZE)
-
-    buffer = io.BytesIO()
-    # ✅ Compress image (JPEG 70%)
-    img.save(buffer, format="JPEG", quality=70, optimize=True)
-
-    return buffer.getvalue()
+    """Resize + compress image to reduce RAM usage"""
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        img.thumbnail(MAX_IMAGE_SIZE)
+        
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=70, optimize=True)
+        return buffer.getvalue()
+    except Exception as e:
+        logger.error(f"Preprocessing error: {e}")
+        raise
 
 
 @app.route('/')
 def home():
     return jsonify({
-        "message": "Background Remover API Running!",
+        "message": "Background Remover API Running in Docker!",
         "status": "success",
-        "docs": "/remove-background"
+        "endpoints": {
+            "remove_background": "POST /remove-background",
+            "health": "GET /health"
+        },
+        "limits": {
+            "max_upload_mb": MAX_UPLOAD_MB,
+            "max_dimensions": MAX_IMAGE_SIZE
+        }
     })
 
 
@@ -78,19 +90,29 @@ def remove_background():
             input_data = base64.b64decode(image_b64)
 
         else:
-            return jsonify({"success": False, "error": "Send image as file or base64"}), 400
+            return jsonify({
+                "success": False, 
+                "error": "Send image as: file upload, JSON base64, or form base64",
+                "examples": {
+                    "curl_file": "curl -X POST -F 'image=@photo.jpg' http://localhost:5000/remove-background",
+                    "curl_base64": "curl -X POST -H 'Content-Type: application/json' -d '{\"image\":\"base64string\"}' http://localhost:5000/remove-background"
+                }
+            }), 400
 
         logger.info(f"Original size: {len(input_data)} bytes")
 
         # ✅ Upload size limit
         if len(input_data) > MAX_UPLOAD_MB * 1024 * 1024:
-            return jsonify({"success": False, "error": "Image too large"}), 400
+            return jsonify({
+                "success": False, 
+                "error": f"Image too large. Max: {MAX_UPLOAD_MB}MB"
+            }), 400
 
-        # ✅ PREPROCESS IMAGE (KEY PART)
+        # ✅ PREPROCESS IMAGE
         input_data = preprocess_image(input_data)
         logger.info(f"After compression: {len(input_data)} bytes")
 
-        # ✅ Background removal (low RAM)
+        # ✅ Background removal
         output_data = remove(input_data, session=session)
 
         # ✅ Optimize output PNG
@@ -106,19 +128,30 @@ def remove_background():
             "message": "Background removed successfully",
             "processed_image": result_b64,
             "format": "png",
-            "final_size_bytes": len(output_data)
+            "size_bytes": len(output_data),
+            "data_uri": f"data:image/png;base64,{result_b64}"
         })
 
     except Exception as e:
-        logger.error(f"Error: {e}")
-        return jsonify({"success": False, "error": str(e)}), 500
+        logger.error(f"Error: {e}", exc_info=True)
+        return jsonify({
+            "success": False, 
+            "error": str(e),
+            "tip": "Ensure image is valid (JPG, PNG, etc.)"
+        }), 500
 
 
 @app.route('/health')
 def health():
-    return jsonify({"status": "healthy", "service": "bg-remover"})
+    return jsonify({
+        "status": "healthy", 
+        "service": "bg-remover",
+        "docker": True,
+        "model_loaded": session is not None
+    })
 
 
+# ✅ For local development only (Docker uses gunicorn)
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
     app.run(host='0.0.0.0', port=port, debug=False)
