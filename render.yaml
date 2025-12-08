@@ -1,0 +1,24 @@
+# render.yaml
+services:
+  - type: web
+    name: bg-remover-lite
+    env: python
+    region: singapore  # Singapore region has better free tier
+    plan: free
+    buildCommand: |
+      pip install --no-cache-dir -r requirements-lite.txt
+      python -c "from rembg import new_session; new_session('u2netp')"
+    startCommand: python app_optimized.py
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: 1
+      - key: PORT
+        value: 5000
+      - key: MAX_UPLOAD_MB
+        value: 2
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: models
+      mountPath: /home/appuser/.u2net
+      sizeGB: 1

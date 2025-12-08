@@ -2,6 +2,7 @@ flask
 flask-cors
 rembg
 pillow
+waitress
 numpy
 onnxruntime
 onnxruntime-tools
