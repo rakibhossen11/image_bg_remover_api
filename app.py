@@ -13,112 +13,77 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# Memory limits (render free tier safe)
 MAX_IMAGE_SIZE = (720, 720)
 MAX_UPLOAD_MB = 5
 
-# Load lightweight model (best for 512MB RAM)
-logger.info("Loading Rembg u2netp model...")
-try:
-    session = new_session("u2netp", providers=["CPUExecutionProvider"])
-    logger.info("Model loaded successfully!")
-except Exception as e:
-    logger.error(f"Model load failed: {e}")
-    session = None
+# ----------------------------
+# FIX: Load model manually
+# ----------------------------
+MODEL_PATH = "/app/models/u2netp.onnx"   # <-- CHANGE to your server path
+
+if not os.path.exists(MODEL_PATH):
+    logger.error("MODEL FILE NOT FOUND! Background remove will NOT work.")
+
+logger.info(f"Loading rembg model from: {MODEL_PATH}")
+session = new_session(
+    model=MODEL_PATH,
+    providers=["CPUExecutionProvider"]
+)
+logger.info("Model loaded successfully!")
 
 
 def compress_image(image_bytes):
-    """Compress + resize image for low RAM usage"""
-    try:
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        img.thumbnail(MAX_IMAGE_SIZE)
-
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=70, optimize=True)
-        buffer.seek(0)
-        return buffer.getvalue()
-
-    except Exception as e:
-        logger.error(f"Compression error: {e}")
-        raise
-
-
-@app.route("/")
-def home():
-    return jsonify({
-        "message": "Background Remover API (Render 512MB Optimized)",
-        "status": "running"
-    })
-
-
-@app.route("/health")
-def health():
-    return jsonify({
-        "status": "healthy",
-        "model_loaded": session is not None
-    })
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img.thumbnail(MAX_IMAGE_SIZE)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=70, optimize=True)
+    buf.seek(0)
+    return buf.getvalue()
 
 
 @app.route("/remove-background", methods=["POST"])
-def remove_background():
+def remove_bg():
 
     try:
         image_bytes = None
 
-        # File upload
         if "image" in request.files:
-            file = request.files["image"]
-            image_bytes = file.read()
+            image_bytes = request.files["image"].read()
 
-        # Base64 JSON upload
         elif request.is_json and request.json.get("image"):
-            image_b64 = request.json["image"]
-            if "data:" in image_b64:
-                image_b64 = image_b64.split(",")[1]
-            image_bytes = base64.b64decode(image_b64)
+            b64 = request.json["image"]
+            if "data:" in b64:
+                b64 = b64.split(",")[1]
+            image_bytes = base64.b64decode(b64)
 
         else:
-            return jsonify({
-                "success": False,
-                "error": "No image provided"
-            }), 400
+            return jsonify({"success": False, "error": "No image provided"}), 400
 
-        # Check size limit
-        if len(image_bytes) > MAX_UPLOAD_MB * 1024 * 1024:
-            return jsonify({
-                "success": False,
-                "error": f"Image too large. Max allowed {MAX_UPLOAD_MB}MB"
-            }), 400
+        image_bytes = compress_image(image_bytes)
 
-        # Compress image
-        compressed = compress_image(image_bytes)
-        logger.info(f"Compressed size: {len(compressed)} bytes")
+        # FIX: apply model here
+        output = remove(image_bytes, session=session)
 
-        # Background removal
-        output = remove(compressed, session=session)
-
-        # Convert to Base64
         result_b64 = base64.b64encode(output).decode("utf-8")
 
         return jsonify({
             "success": True,
-            "message": "Background removed successfully",
-            "image_base64": result_b64,
+            "image": result_b64,
             "data_uri": f"data:image/png;base64,{result_b64}",
-            "size_bytes": len(output)
         })
 
     except Exception as e:
-        logger.error(f"Error: {e}", exc_info=True)
-        return jsonify({
-            "success": False,
-            "error": str(e)
-        }), 500
+        logger.error(str(e))
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/")
+def home():
+    return "Background Remover Working with Local Model"
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=5000)
 
 
 
