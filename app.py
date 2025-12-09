@@ -1,125 +1,71 @@
-from flask import Flask, request, jsonify
-from flask_cors import CORS
-from rembg import remove, new_session
-from PIL import Image
-import base64
-import logging
-import os
-import io
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-app = Flask(__name__)
-CORS(app)
-
-# ✅ Environment variables with defaults
-MAX_IMAGE_SIZE = (768, 768)
-MAX_UPLOAD_MB = int(os.getenv('MAX_UPLOAD_MB', '8'))
-MODEL_PATH = os.getenv('MODEL_PATH', '/home/appuser/.u2net')
-
-# ✅ Create models directory if it doesn't exist
-os.makedirs(MODEL_PATH, exist_ok=True)
-
-# ✅ Load model ONCE when app starts
-logger.info("Loading rembg model...")
-session = new_session(
-    "u2netp",
-    providers=["CPUExecutionProvider"]
-)
-logger.info("Model loaded successfully!")
-
-
-def preprocess_image(image_bytes):
-    """Resize + compress image to reduce RAM usage"""
-    try:
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        img.thumbnail(MAX_IMAGE_SIZE)
-        
-        buffer = io.BytesIO()
-        img.save(buffer, format="JPEG", quality=70, optimize=True)
-        return buffer.getvalue()
-    except Exception as e:
-        logger.error(f"Preprocessing error: {e}")
-        raise
-
-
-@app.route('/')
-def home():
-    return jsonify({
-        "message": "Background Remover API Running in Docker!",
-        "status": "success",
-        "endpoints": {
-            "remove_background": "POST /remove-background",
-            "health": "GET /health"
-        },
-        "limits": {
-            "max_upload_mb": MAX_UPLOAD_MB,
-            "max_dimensions": MAX_IMAGE_SIZE
-        }
-    })
-
-
 @app.route('/remove-background', methods=['POST', 'OPTIONS'])
 def remove_background():
     if request.method == 'OPTIONS':
         return '', 200
 
     try:
-        input_data = None
+        # [Same code for getting input_data...]
+        # ...
+        
+        # ✅ Convert to PIL Image with better error handling
+        try:
+            img = Image.open(io.BytesIO(input_data))
+            
+            # Convert to RGB if needed
+            if img.mode in ('RGBA', 'LA', 'P'):
+                img = img.convert('RGB')
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+                
+        except Exception as e:
+            logger.error(f"Image open error: {e}")
+            return jsonify({
+                "success": False, 
+                "error": f"Cannot process image: {str(e)}"
+            }), 400
 
-        # ✅ File upload
-        if 'image' in request.files:
-            file = request.files['image']
-            if file.filename == '':
-                return jsonify({"success": False, "error": "No file selected"}), 400
-            input_data = file.read()
+        # ✅ Resize if too large
+        img.thumbnail(MAX_IMAGE_SIZE)
+        
+        # ✅ Convert to bytes
+        buffer = io.BytesIO()
+        img.save(buffer, format="PNG")
+        img_bytes = buffer.getvalue()
+        
+        logger.info(f"Processed image size: {len(img_bytes)} bytes")
 
-        # ✅ JSON Base64 upload
-        elif request.is_json and request.json.get('image'):
-            image_b64 = request.json['image']
-            if image_b64.startswith('data:'):
-                image_b64 = image_b64.split(',')[1]
-            input_data = base64.b64decode(image_b64)
+        # ✅ TRY DIFFERENT APPROACHES IF FIRST FAILS
+        try:
+            # Method 1: Direct bytes removal
+            output = remove(img_bytes, session=session)
+        except Exception as e1:
+            logger.warning(f"Method 1 failed: {e1}, trying Method 2...")
+            try:
+                # Method 2: PIL Image removal
+                output = remove(img, session=session)
+            except Exception as e2:
+                logger.warning(f"Method 2 failed: {e2}, trying Method 3...")
+                try:
+                    # Method 3: Convert to RGBA and then remove
+                    img_rgba = img.convert('RGBA')
+                    output = remove(img_rgba, session=session)
+                except Exception as e3:
+                    logger.error(f"All methods failed: {e3}")
+                    return jsonify({
+                        "success": False, 
+                        "error": "Failed to remove background. Try a different image format.",
+                        "details": str(e3)
+                    }), 500
 
-        # ✅ Form base64 upload
-        elif request.form and 'image' in request.form:
-            image_b64 = request.form['image']
-            if image_b64.startswith('data:'):
-                image_b64 = image_b64.split(',')[1]
-            input_data = base64.b64decode(image_b64)
-
+        # ✅ Convert output to base64
+        if hasattr(output, 'tobytes'):
+            # If output is a PIL Image
+            output_buffer = io.BytesIO()
+            output.save(output_buffer, format="PNG")
+            output_data = output_buffer.getvalue()
         else:
-            return jsonify({
-                "success": False, 
-                "error": "Send image as: file upload, JSON base64, or form base64",
-                "examples": {
-                    "curl_file": "curl -X POST -F 'image=@photo.jpg' http://localhost:5000/remove-background",
-                    "curl_base64": "curl -X POST -H 'Content-Type: application/json' -d '{\"image\":\"base64string\"}' http://localhost:5000/remove-background"
-                }
-            }), 400
-
-        logger.info(f"Original size: {len(input_data)} bytes")
-
-        # ✅ Upload size limit
-        if len(input_data) > MAX_UPLOAD_MB * 1024 * 1024:
-            return jsonify({
-                "success": False, 
-                "error": f"Image too large. Max: {MAX_UPLOAD_MB}MB"
-            }), 400
-
-        # ✅ PREPROCESS IMAGE
-        input_data = preprocess_image(input_data)
-        logger.info(f"After compression: {len(input_data)} bytes")
-
-        # ✅ Background removal
-        output_data = remove(input_data, session=session)
-
-        # ✅ Optimize output PNG
-        out_img = Image.open(io.BytesIO(output_data))
-        out_buf = io.BytesIO()
-        out_img.save(out_buf, format="PNG", optimize=True)
-        output_data = out_buf.getvalue()
+            # If output is bytes
+            output_data = output
 
         result_b64 = base64.b64encode(output_data).decode("utf-8")
 
@@ -139,22 +85,6 @@ def remove_background():
             "error": str(e),
             "tip": "Ensure image is valid (JPG, PNG, etc.)"
         }), 500
-
-
-@app.route('/health')
-def health():
-    return jsonify({
-        "status": "healthy", 
-        "service": "bg-remover",
-        "docker": True,
-        "model_loaded": session is not None
-    })
-
-
-# ✅ For local development only (Docker uses gunicorn)
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
 
 
 # from flask import Flask, request, jsonify
