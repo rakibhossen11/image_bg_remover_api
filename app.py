@@ -1,90 +1,125 @@
-@app.route('/remove-background', methods=['POST', 'OPTIONS'])
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+from rembg import remove, new_session
+from PIL import Image
+import base64
+import logging
+import os
+import io
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = Flask(__name__)
+CORS(app)
+
+# Memory limits (render free tier safe)
+MAX_IMAGE_SIZE = (720, 720)
+MAX_UPLOAD_MB = 5
+
+# Load lightweight model (best for 512MB RAM)
+logger.info("Loading Rembg u2netp model...")
+try:
+    session = new_session("u2netp", providers=["CPUExecutionProvider"])
+    logger.info("Model loaded successfully!")
+except Exception as e:
+    logger.error(f"Model load failed: {e}")
+    session = None
+
+
+def compress_image(image_bytes):
+    """Compress + resize image for low RAM usage"""
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        img.thumbnail(MAX_IMAGE_SIZE)
+
+        buffer = io.BytesIO()
+        img.save(buffer, format="JPEG", quality=70, optimize=True)
+        buffer.seek(0)
+        return buffer.getvalue()
+
+    except Exception as e:
+        logger.error(f"Compression error: {e}")
+        raise
+
+
+@app.route("/")
+def home():
+    return jsonify({
+        "message": "Background Remover API (Render 512MB Optimized)",
+        "status": "running"
+    })
+
+
+@app.route("/health")
+def health():
+    return jsonify({
+        "status": "healthy",
+        "model_loaded": session is not None
+    })
+
+
+@app.route("/remove-background", methods=["POST"])
 def remove_background():
-    if request.method == 'OPTIONS':
-        return '', 200
 
     try:
-        # [Same code for getting input_data...]
-        # ...
-        
-        # ✅ Convert to PIL Image with better error handling
-        try:
-            img = Image.open(io.BytesIO(input_data))
-            
-            # Convert to RGB if needed
-            if img.mode in ('RGBA', 'LA', 'P'):
-                img = img.convert('RGB')
-            elif img.mode != 'RGB':
-                img = img.convert('RGB')
-                
-        except Exception as e:
-            logger.error(f"Image open error: {e}")
+        image_bytes = None
+
+        # File upload
+        if "image" in request.files:
+            file = request.files["image"]
+            image_bytes = file.read()
+
+        # Base64 JSON upload
+        elif request.is_json and request.json.get("image"):
+            image_b64 = request.json["image"]
+            if "data:" in image_b64:
+                image_b64 = image_b64.split(",")[1]
+            image_bytes = base64.b64decode(image_b64)
+
+        else:
             return jsonify({
-                "success": False, 
-                "error": f"Cannot process image: {str(e)}"
+                "success": False,
+                "error": "No image provided"
             }), 400
 
-        # ✅ Resize if too large
-        img.thumbnail(MAX_IMAGE_SIZE)
-        
-        # ✅ Convert to bytes
-        buffer = io.BytesIO()
-        img.save(buffer, format="PNG")
-        img_bytes = buffer.getvalue()
-        
-        logger.info(f"Processed image size: {len(img_bytes)} bytes")
+        # Check size limit
+        if len(image_bytes) > MAX_UPLOAD_MB * 1024 * 1024:
+            return jsonify({
+                "success": False,
+                "error": f"Image too large. Max allowed {MAX_UPLOAD_MB}MB"
+            }), 400
 
-        # ✅ TRY DIFFERENT APPROACHES IF FIRST FAILS
-        try:
-            # Method 1: Direct bytes removal
-            output = remove(img_bytes, session=session)
-        except Exception as e1:
-            logger.warning(f"Method 1 failed: {e1}, trying Method 2...")
-            try:
-                # Method 2: PIL Image removal
-                output = remove(img, session=session)
-            except Exception as e2:
-                logger.warning(f"Method 2 failed: {e2}, trying Method 3...")
-                try:
-                    # Method 3: Convert to RGBA and then remove
-                    img_rgba = img.convert('RGBA')
-                    output = remove(img_rgba, session=session)
-                except Exception as e3:
-                    logger.error(f"All methods failed: {e3}")
-                    return jsonify({
-                        "success": False, 
-                        "error": "Failed to remove background. Try a different image format.",
-                        "details": str(e3)
-                    }), 500
+        # Compress image
+        compressed = compress_image(image_bytes)
+        logger.info(f"Compressed size: {len(compressed)} bytes")
 
-        # ✅ Convert output to base64
-        if hasattr(output, 'tobytes'):
-            # If output is a PIL Image
-            output_buffer = io.BytesIO()
-            output.save(output_buffer, format="PNG")
-            output_data = output_buffer.getvalue()
-        else:
-            # If output is bytes
-            output_data = output
+        # Background removal
+        output = remove(compressed, session=session)
 
-        result_b64 = base64.b64encode(output_data).decode("utf-8")
+        # Convert to Base64
+        result_b64 = base64.b64encode(output).decode("utf-8")
 
         return jsonify({
             "success": True,
             "message": "Background removed successfully",
-            "processed_image": result_b64,
-            "format": "png",
-            "size_bytes": len(output_data),
-            "data_uri": f"data:image/png;base64,{result_b64}"
+            "image_base64": result_b64,
+            "data_uri": f"data:image/png;base64,{result_b64}",
+            "size_bytes": len(output)
         })
 
     except Exception as e:
         logger.error(f"Error: {e}", exc_info=True)
         return jsonify({
-            "success": False, 
-            "error": str(e),
-            "tip": "Ensure image is valid (JPG, PNG, etc.)"
+            "success": False,
+            "error": str(e)
         }), 500
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
+
 
 
 # from flask import Flask, request, jsonify
