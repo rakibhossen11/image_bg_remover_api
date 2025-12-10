@@ -1,89 +1,70 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from rembg import remove, new_session
 from PIL import Image
+import numpy as np
+import cv2
 import base64
-import logging
-import os
 import io
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
 
-MAX_IMAGE_SIZE = (720, 720)
-MAX_UPLOAD_MB = 5
+def remove_bg(image_bytes):
+    image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img = np.array(image)
 
-# ----------------------------
-# FIX: Load model manually
-# ----------------------------
-MODEL_PATH = "/app/models/u2netp.onnx"   # <-- CHANGE to your server path
+    # Convert to BGR for OpenCV
+    bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-if not os.path.exists(MODEL_PATH):
-    logger.error("MODEL FILE NOT FOUND! Background remove will NOT work.")
+    # Create mask using simple threshold
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY_INV)
 
-logger.info(f"Loading rembg model from: {MODEL_PATH}")
-session = new_session(
-    model=MODEL_PATH,
-    providers=["CPUExecutionProvider"]
-)
-logger.info("Model loaded successfully!")
+    # Apply GrabCut for better accuracy
+    mask_gc = np.zeros(img.shape[:2], np.uint8)
+    bgdModel = np.zeros((1, 65), np.float64)
+    fgdModel = np.zeros((1, 65), np.float64)
+    rect = (1, 1, img.shape[1]-2, img.shape[0]-2)
 
+    cv2.grabCut(bgr, mask_gc, rect, bgdModel, fgdModel, 3, cv2.GC_INIT_WITH_RECT)
 
-def compress_image(image_bytes):
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    img.thumbnail(MAX_IMAGE_SIZE)
+    mask2 = np.where((mask_gc == 2) | (mask_gc == 0), 0, 1).astype('uint8')
+    result = img * mask2[:, :, np.newaxis]
+
+    # Convert to PNG
+    output = Image.fromarray(result)
     buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=70, optimize=True)
-    buf.seek(0)
+    output.save(buf, format="PNG")
     return buf.getvalue()
 
 
-@app.route("/remove-background", methods=["POST"])
-def remove_bg():
+@app.route('/remove-background', methods=['POST'])
+def api_remove():
+    if 'image' not in request.files:
+        return jsonify({"success": False, "error": "No image uploaded"}), 400
 
-    try:
-        image_bytes = None
+    file = request.files['image']
+    image_bytes = file.read()
 
-        if "image" in request.files:
-            image_bytes = request.files["image"].read()
+    output = remove_bg(image_bytes)
 
-        elif request.is_json and request.json.get("image"):
-            b64 = request.json["image"]
-            if "data:" in b64:
-                b64 = b64.split(",")[1]
-            image_bytes = base64.b64decode(b64)
+    result_b64 = base64.b64encode(output).decode('utf-8')
 
-        else:
-            return jsonify({"success": False, "error": "No image provided"}), 400
-
-        image_bytes = compress_image(image_bytes)
-
-        # FIX: apply model here
-        output = remove(image_bytes, session=session)
-
-        result_b64 = base64.b64encode(output).decode("utf-8")
-
-        return jsonify({
-            "success": True,
-            "image": result_b64,
-            "data_uri": f"data:image/png;base64,{result_b64}",
-        })
-
-    except Exception as e:
-        logger.error(str(e))
-        return jsonify({"success": False, "error": str(e)}), 500
+    return jsonify({
+        "success": True,
+        "image": result_b64,
+        "data_uri": f"data:image/png;base64,{result_b64}"
+    })
 
 
 @app.route("/")
 def home():
-    return "Background Remover Working with Local Model"
+    return "Light Background Remover API Running!"
 
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000)
+if __name__ == '__main__':
+    app.run(debug=False)
+
 
 
 
